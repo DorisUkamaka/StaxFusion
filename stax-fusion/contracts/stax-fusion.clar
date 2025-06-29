@@ -1,6 +1,4 @@
 ;; StaxFusion: AI-Powered DeFi Yield Optimizer
-;; Commit 1: Core Data Structures & User Management
-;; Author: StaxFusion Team
 ;; Description: Foundation contract with user management, vault structure, and basic constants
 
 ;; =============================================================================
@@ -19,6 +17,7 @@
 (define-constant ERR_RISK_TOLERANCE_INVALID (err u105))
 (define-constant ERR_REBALANCE_COOLDOWN (err u106))
 (define-constant ERR_SLIPPAGE_EXCEEDED (err u107))
+(define-constant ERR_PROTOCOL_NOT_FOUND (err u108))
 
 ;; Protocol constants
 (define-constant MAX_PROTOCOLS u10)
@@ -245,6 +244,387 @@
                     protocols-involved: (list),
                 })
                 (ok true)
+            )
+            ERR_VAULT_NOT_FOUND
+        )
+    )
+)
+
+;; =============================================================================
+;; PROTOCOL MANAGEMENT FUNCTIONS
+;; =============================================================================
+
+(define-public (register-protocol
+        (name (string-ascii 32))
+        (contract-address principal)
+        (initial-apy uint)
+        (risk-score uint)
+    )
+    (let (
+            (new-protocol-id (+ (var-get protocol-count) u1))
+            (current-block (get-current-block-height))
+        )
+        (asserts! (is-contract-owner) ERR_UNAUTHORIZED)
+        (asserts! (not (is-emergency-paused)) ERR_UNAUTHORIZED)
+        (asserts! (and (>= risk-score u1) (<= risk-score u10))
+            ERR_RISK_TOLERANCE_INVALID
+        )
+        (asserts! (<= new-protocol-id MAX_PROTOCOLS) ERR_PROTOCOL_NOT_ACTIVE)
+        (map-set protocols { protocol-id: new-protocol-id } {
+            name: name,
+            contract-address: contract-address,
+            current-apy: initial-apy,
+            risk-score: risk-score,
+            tvl: u0,
+            is-active: true,
+            last-updated: current-block,
+        })
+        (var-set protocol-count new-protocol-id)
+        (ok new-protocol-id)
+    )
+)
+
+(define-public (update-protocol-apy
+        (protocol-id uint)
+        (new-apy uint)
+    )
+    (let ((current-block (get-current-block-height)))
+        (asserts! (is-contract-owner) ERR_UNAUTHORIZED)
+        (asserts! (not (is-emergency-paused)) ERR_UNAUTHORIZED)
+        (match (map-get? protocols { protocol-id: protocol-id })
+            protocol-data (begin
+                (map-set protocols { protocol-id: protocol-id }
+                    (merge protocol-data {
+                        current-apy: new-apy,
+                        last-updated: current-block,
+                    })
+                )
+                (ok true)
+            )
+            ERR_PROTOCOL_NOT_FOUND
+        )
+    )
+)
+
+(define-public (toggle-protocol-status (protocol-id uint))
+    (let ((current-block (get-current-block-height)))
+        (asserts! (is-contract-owner) ERR_UNAUTHORIZED)
+        (match (map-get? protocols { protocol-id: protocol-id })
+            protocol-data (begin
+                (map-set protocols { protocol-id: protocol-id }
+                    (merge protocol-data {
+                        is-active: (not (get is-active protocol-data)),
+                        last-updated: current-block,
+                    })
+                )
+                (ok true)
+            )
+            ERR_PROTOCOL_NOT_FOUND
+        )
+    )
+)
+
+;; =============================================================================
+;; AI STRATEGY ENGINE FUNCTIONS
+;; =============================================================================
+
+(define-private (calculate-risk-adjusted-yield
+        (apy uint)
+        (risk-score uint)
+        (risk-tolerance uint)
+    )
+    (let ((risk-adjustment (if (<= risk-score risk-tolerance)
+            u10000 ;; No penalty for acceptable risk
+            (- u10000 (* (- risk-score risk-tolerance) u500)) ;; 5% penalty per risk level
+        )))
+        (/ (* apy risk-adjustment) u10000)
+    )
+)
+
+(define-private (get-optimal-allocation
+        (vault-id uint)
+        (risk-tolerance uint)
+    )
+    (let (
+            (protocol-1-data (unwrap-panic (map-get? protocols { protocol-id: u1 })))
+            (protocol-2-data (unwrap-panic (map-get? protocols { protocol-id: u2 })))
+            (protocol-3-data (unwrap-panic (map-get? protocols { protocol-id: u3 })))
+        )
+        ;; Simplified allocation logic - in production, this would be more sophisticated
+        (if (<= risk-tolerance u3)
+            ;; Conservative allocation
+            (list
+                {
+                    protocol-id: u1,
+                    allocation: u6000,
+                }
+                ;; 60% to safest
+                {
+                    protocol-id: u2,
+                    allocation: u3000,
+                }
+                ;; 30% to medium
+                {
+                    protocol-id: u3,
+                    allocation: u1000,
+                }
+                ;; 10% to higher risk
+            )
+            (if (<= risk-tolerance u7)
+                ;; Moderate allocation
+                (list
+                    {
+                        protocol-id: u1,
+                        allocation: u4000,
+                    }
+                    ;; 40%
+                    {
+                        protocol-id: u2,
+                        allocation: u4000,
+                    }
+                    ;; 40%
+                    {
+                        protocol-id: u3,
+                        allocation: u2000,
+                    }
+                    ;; 20%
+                )
+                ;; Aggressive allocation
+                (list
+                    {
+                        protocol-id: u1,
+                        allocation: u2000,
+                    }
+                    ;; 20%
+                    {
+                        protocol-id: u2,
+                        allocation: u3000,
+                    }
+                    ;; 30%
+                    {
+                        protocol-id: u3,
+                        allocation: u5000,
+                    }
+                    ;; 50%
+                )
+            )
+        )
+    )
+)
+
+(define-private (calculate-rebalance-opportunity
+        (vault-id uint)
+        (current-allocations (list 10 {
+            protocol-id: uint,
+            allocation: uint,
+        }))
+    )
+    (let (
+            (vault-data (unwrap-panic (map-get? user-vaults { user: tx-sender })))
+            (risk-tolerance (get risk-tolerance vault-data))
+            (optimal-allocations (get-optimal-allocation vault-id risk-tolerance))
+        )
+        ;; Simplified calculation - returns true if rebalancing is beneficial
+        (> (len current-allocations) u0)
+        ;; Placeholder logic
+    )
+)
+
+;; =============================================================================
+;; YIELD CALCULATION FUNCTIONS
+;; =============================================================================
+
+(define-private (calculate-compound-yield
+        (principal-amount uint)
+        (apy uint)
+        (time-periods uint)
+    )
+    (let (
+            (rate-per-period (/ apy u365)) ;; Daily compounding
+            (compound-factor (pow (+ u10000 rate-per-period) time-periods))
+        )
+        (/ (* principal-amount compound-factor) u10000)
+    )
+)
+
+(define-private (estimate-vault-yield (vault-id uint))
+    (let (
+            (allocation-1 (default-to {
+                allocated-amount: u0,
+                allocation-percentage: u0,
+                last-yield: u0,
+                allocation-timestamp: u0,
+            }
+                (map-get? vault-allocations {
+                    vault-id: vault-id,
+                    protocol-id: u1,
+                })
+            ))
+            (allocation-2 (default-to {
+                allocated-amount: u0,
+                allocation-percentage: u0,
+                last-yield: u0,
+                allocation-timestamp: u0,
+            }
+                (map-get? vault-allocations {
+                    vault-id: vault-id,
+                    protocol-id: u2,
+                })
+            ))
+            (allocation-3 (default-to {
+                allocated-amount: u0,
+                allocation-percentage: u0,
+                last-yield: u0,
+                allocation-timestamp: u0,
+            }
+                (map-get? vault-allocations {
+                    vault-id: vault-id,
+                    protocol-id: u3,
+                })
+            ))
+        )
+        (+ (get last-yield allocation-1) (get last-yield allocation-2)
+            (get last-yield allocation-3)
+        )
+    )
+)
+
+;; =============================================================================
+;; DEPOSIT & WITHDRAWAL FUNCTIONS
+;; =============================================================================
+
+(define-public (deposit (amount uint))
+    (let (
+            (user tx-sender)
+            (current-block (get-current-block-height))
+        )
+        (asserts! (not (is-emergency-paused)) ERR_UNAUTHORIZED)
+        (asserts! (>= amount MIN_DEPOSIT) ERR_INVALID_AMOUNT)
+        (match (map-get? user-vaults { user: user })
+            vault-data (let (
+                    (new-balance (+ (get balance vault-data) amount))
+                    (vault-id (get vault-id vault-data))
+                )
+                ;; Update user vault balance
+                (map-set user-vaults { user: user }
+                    (merge vault-data {
+                        balance: new-balance,
+                        last-deposit: current-block,
+                    })
+                )
+                ;; Update total value locked
+                (var-set total-value-locked
+                    (+ (var-get total-value-locked) amount)
+                )
+                ;; Record deposit in history
+                (map-set user-history {
+                    user: user,
+                    timestamp: current-block,
+                } {
+                    action: "DEPOSIT",
+                    amount: amount,
+                    vault-balance-after: new-balance,
+                    protocols-involved: (list),
+                })
+                ;; Trigger automatic allocation
+                (auto-allocate-funds vault-id (get risk-tolerance vault-data)
+                    amount
+                )
+                (ok new-balance)
+            )
+            ERR_VAULT_NOT_FOUND
+        )
+    )
+)
+
+(define-private (auto-allocate-funds
+        (vault-id uint)
+        (risk-tolerance uint)
+        (amount uint)
+    )
+    (let (
+            (optimal-allocations (get-optimal-allocation vault-id risk-tolerance))
+            (current-block (get-current-block-height))
+        )
+        ;; Allocate funds according to optimal strategy
+        (begin
+            (fold allocate-to-protocol optimal-allocations {
+                vault-id: vault-id,
+                amount: amount,
+                block: current-block,
+            })
+            true
+        )
+    )
+)
+
+(define-private (allocate-to-protocol
+        (allocation {
+            protocol-id: uint,
+            allocation: uint,
+        })
+        (context {
+            vault-id: uint,
+            amount: uint,
+            block: uint,
+        })
+    )
+    (let (
+            (protocol-id (get protocol-id allocation))
+            (allocation-pct (get allocation allocation))
+            (vault-id (get vault-id context))
+            (total-amount (get amount context))
+            (current-block (get block context))
+            (allocated-amount (/ (* total-amount allocation-pct) u10000))
+        )
+        (map-set vault-allocations {
+            vault-id: vault-id,
+            protocol-id: protocol-id,
+        } {
+            allocated-amount: allocated-amount,
+            allocation-percentage: allocation-pct,
+            last-yield: u0,
+            allocation-timestamp: current-block,
+        })
+        context
+        ;; Return context for fold continuation
+    )
+)
+
+(define-public (withdraw (amount uint))
+    (let (
+            (user tx-sender)
+            (current-block (get-current-block-height))
+        )
+        (asserts! (not (is-emergency-paused)) ERR_UNAUTHORIZED)
+        (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+        (match (map-get? user-vaults { user: user })
+            vault-data (let (
+                    (current-balance (get balance vault-data))
+                    (vault-id (get vault-id vault-data))
+                )
+                (asserts! (>= current-balance amount) ERR_INSUFFICIENT_BALANCE)
+                (let ((new-balance (- current-balance amount)))
+                    ;; Update user vault balance
+                    (map-set user-vaults { user: user }
+                        (merge vault-data { balance: new-balance })
+                    )
+                    ;; Update total value locked
+                    (var-set total-value-locked
+                        (- (var-get total-value-locked) amount)
+                    )
+                    ;; Record withdrawal in history
+                    (map-set user-history {
+                        user: user,
+                        timestamp: current-block,
+                    } {
+                        action: "WITHDRAWAL",
+                        amount: amount,
+                        vault-balance-after: new-balance,
+                        protocols-involved: (list),
+                    })
+                    (ok new-balance)
+                )
             )
             ERR_VAULT_NOT_FOUND
         )
